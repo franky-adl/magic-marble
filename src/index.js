@@ -12,7 +12,7 @@ import { loadHDRI } from "./common-utils"
 // Other deps
 const hdriURL = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/empty_warehouse_01_1k.hdr'
 const displacementMapURL = 'https://i.imgur.com/L1pqRg9.jpeg'
-import TextureImg from "./assets/wavy3.png"
+import TextureImg from "./assets/wavy6.png"
 
 global.THREE = THREE
 
@@ -80,6 +80,7 @@ let app = {
     this.controls = new OrbitControls(camera, renderer.domElement)
     this.controls.enableDamping = true
     this.controls.autoRotate = true
+    this.controls.autoRotateSpeed = 0.5
 
     // set up environment
     const envMap = await loadHDRI(hdriURL)
@@ -105,6 +106,7 @@ let app = {
     auroraMaterial = new THREE.ShaderMaterial({
       vertexShader: `
         varying float a_pos;
+        varying float a_cam;
         varying vec3 v_pos;
         varying vec3 v_dir;
         varying vec3 v_cam;
@@ -121,9 +123,9 @@ let app = {
           v_pos = position;
           v_cam = cameraPosition;
           v_dir = position - cameraPosition; // Points from camera to vertex
-          // vec3 revCam = cameraPosition * -1.;
+          vec3 revCam = cameraPosition * -1.;
           a_pos = angleBetweenVs(cameraPosition, position);
-          // float angleCam = angleBetweenVs(v_dir, revCam);
+          a_cam = angleBetweenVs(v_dir, revCam);
           // attackAngle = PI / 2. - anglePos - angleCam;
 
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); 
@@ -155,6 +157,7 @@ let app = {
         varying vec3 v_dir;
         varying vec3 v_cam;
         varying float a_pos;
+        varying float a_cam;
 
         /**
          * @param p - Point to displace
@@ -181,8 +184,10 @@ let app = {
           float discriminant = b*b - 4.0*a*c;
           if (discriminant > 0.0 && a_pos > 0.0) {
             roots[0] = 2.0;
-            roots[1] = (-b + sqrt(pow(b,2.0) - 4.0*a*c)) / (2.0 * a);
-            roots[2] = (-b - sqrt(pow(b,2.0) - 4.0*a*c)) / (2.0 * a);
+            // a smaller value means a closer point
+            roots[1] = (-b - sqrt(pow(b,2.0) - 4.0*a*c)) / (2.0 * a);
+            // a larger value means a further point
+            roots[2] = (-b + sqrt(pow(b,2.0) - 4.0*a*c)) / (2.0 * a);
           } else if (discriminant >= 0.0) {
             roots[0] = 1.0;
             roots[1] = (-b + sqrt(pow(b,2.0) - 4.0*a*c)) / (2.0 * a);
@@ -202,6 +207,20 @@ let app = {
             return smoothstep(0., 1., (2./3.)*(x - a)/(b - a) + (1./6.))*(b - a) + a;
         }
 
+        // https://www.shadertoy.com/view/MsSBRh
+        // inverse of y = x²(3-2x)
+        float inverse_smoothstep( float x )
+        {
+            return 0.5-sin(asin(1.0-2.0*x)/3.0);
+        }
+
+        float cubicPulse( float c, float w, float x ){
+          x = abs(x - c);
+          if( x>w ) return 0.0;
+          x /= w;
+          return 1.0 - x*x*(3.0-2.0*x);
+        }
+
         // angle returned in radians
         float angleBetweenVs(vec3 v1, vec3 v2) {
           return acos(dot(v1, v2) / (length(v1) * length(v2)));
@@ -213,11 +232,13 @@ let app = {
           float totalVolume = 0.;
           float perIteration = 1. / float(iterations);
           int heightmapHits = 0;
+          int intercepts = 0;
 
           // This is to make depth thinner at the fringes of the sphere
           // such that the shells/iterations are more compact,
           // if the shells are slightly too far apart, you will see the cross-section lines
           float m_depth = depth * (1.0 - smoothstep(0.0, 1.15, a_pos));
+          // float m_depth = depth;
 
           // https://en.wikipedia.org/wiki/Line%E2%80%93sphere_intersection
           // calculate a,b,c of the line equation for v_dir
@@ -231,11 +252,13 @@ let app = {
 
             // loop through all intersections, roots[0] stores number of intersections
             for (int j=1; j<=int(roots[0]); ++j) {
+              intercepts += 1;
               vec3 p = v_cam + roots[j] * rayDir;
               float ang_p = angleBetweenVs(v_cam, p);
               
               vec2 uv = equirectUv(normalize(p));
               float heightMapVal = texture(heightMap, uv).r;
+              // dimmify color if it is at the back
               if (j == 2) {
                 heightMapVal *= 0.4;
               }
@@ -245,17 +268,47 @@ let app = {
               }
               
               // Accumulate the volume and advance the ray forward one step
-              totalVolume += heightMapVal * perIteration;
+              // totalVolume += heightMapVal * perIteration;
+              // if (ang_p >= 1.11 && j == 1) {
+              //   totalVolume += 10.0;
+              // }
+              // trying to use cubicPulse to only amplify volume at the fringes
+              // but the effect isn't enough... as long as you render them as shells,
+              // it's still very easy to see the shell fringes even though they have high volume each
+              // as long as there're still gaps between them
+              // TODO: try to think of a way to 'remove' the gaps at the fringes
+              float mid_angle = PI - PI/2. - a_cam;
+              totalVolume += heightMapVal * perIteration * pow((cubicPulse(mid_angle, 0.3, ang_p) + 1.0), 2.0);
+              // totalVolume += heightMapVal * perIteration;
             }
             // descend one shell downwards
             radius -= m_depth * perIteration;
           }
           // I want to increase the color for the aurora bands at the fringes
-          // so I use another clamp here for places where bands exist
-          // TODO: could improve this to target just the fringes i guess?
-          if (heightmapHits > 0) {
-            totalVolume = softClamp(totalVolume, 0.15, 0.9);
-          }
+          // so I tried using clamp here for places where bands exist
+          // but the effect isn't good because that makes the color difference
+          // between bands and emptiness too abrupt
+          // if (heightmapHits > 0) {
+          //   totalVolume = smoothClamp(totalVolume, 0.15, 0.9);
+          // }
+
+          // Condition 1: p has to be a point touching a virtual shell
+          // Condition 2: p cannot be lower than the lowest shell (1. - m_depth)
+          // then check the uv of p and heightmap val there and add that to totalVolume
+          // float targetRadius = sin(a_cam) * sqrt(dot(v_cam, v_cam));
+          // if (targetRadius >= (1.-m_depth)) {
+          //   float rayLength = cos(a_cam) * sqrt(dot(v_cam, v_cam));
+          //   vec3 p = v_cam + rayLength * rayDir;
+          //   vec2 uv = equirectUv(normalize(p));
+          //   float heightMapVal = texture(heightMap, uv).r;
+          //   totalVolume += heightMapVal * perIteration * 2.;
+          // }
+
+          // TODO: improve the above approximate fix
+          // such that not only at the point of fringe that the color is magnified
+          // but angles near the point of fringe need to receive the amplification proportionally/smoothly
+          // Condition 1: set a range for a_pos that does amplification?
+          // Condition 2: has to be where there are heightmap values
           
           // Top-clamp the totalVolume so the colors at overlapping areas won't be too blown-up
           vec4 rgba = mix(vec4(colorA, 0.0), vec4(colorB, 1.0), clamp(totalVolume, 0.0, 0.9));
