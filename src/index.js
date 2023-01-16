@@ -3,7 +3,6 @@ import * as THREE from "three"
 import * as dat from 'dat.gui'
 import Stats from "three/examples/jsm/libs/stats.module"
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls"
-import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader"
 
 // Core boilerplate code deps
 import { createCamera, createComposer, createRenderer, runApp, getDefaultUniforms } from "./core-utils"
@@ -22,7 +21,7 @@ global.THREE = THREE
 const params = {
   // general scene params
   roughness: 0.1,
-  iterations: 60,
+  iterations: 100,
   depth: 0.3,
   smoothing: 0.2,
   displacement: 0.1,
@@ -106,7 +105,7 @@ let app = {
     auroraMaterial = new THREE.ShaderMaterial({
       vertexShader: `
         varying float a_pos;
-        varying float a_cam;
+        // varying float a_cam;
         varying vec3 v_pos;
         varying vec3 v_dir;
         varying vec3 v_cam;
@@ -123,9 +122,9 @@ let app = {
           v_pos = position;
           v_cam = cameraPosition;
           v_dir = position - cameraPosition; // Points from camera to vertex
-          vec3 revCam = cameraPosition * -1.;
           a_pos = angleBetweenVs(cameraPosition, position);
-          a_cam = angleBetweenVs(v_dir, revCam);
+          // vec3 revCam = cameraPosition * -1.;
+          // a_cam = angleBetweenVs(v_dir, revCam);
           // attackAngle = PI / 2. - anglePos - angleCam;
 
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); 
@@ -157,7 +156,6 @@ let app = {
         varying vec3 v_dir;
         varying vec3 v_cam;
         varying float a_pos;
-        varying float a_cam;
 
         /**
          * @param p - Point to displace
@@ -180,9 +178,9 @@ let app = {
         // https://en.wikipedia.org/wiki/Quadratic_equation
         // we are only taking the larger result as we use + sign
         // but actually we might want to consider both intersections as that's more realistic
-        void solveQuadratic(float a, float b, float c, inout float roots[3], float a_pos) {
+        void solveQuadratic(float a, float b, float c, inout float roots[3]) {
           float discriminant = b*b - 4.0*a*c;
-          if (discriminant > 0.0 && a_pos > 0.0) {
+          if (discriminant > 0.0) {
             roots[0] = 2.0;
             // a smaller value means a closer point
             roots[1] = (-b - sqrt(pow(b,2.0) - 4.0*a*c)) / (2.0 * a);
@@ -196,119 +194,48 @@ let app = {
           }
         }
 
-        // From: https://www.shadertoy.com/view/Ws3Xzr
-        // effect could still be improved, I don't want hard edges for the aurora
-        float smoothClamp(float x, float a, float b)
-        {
-            return smoothstep(0., 1., (x - a)/(b - a))*(b - a) + a;
-        }
-        float softClamp(float x, float a, float b)
-        {
-            return smoothstep(0., 1., (2./3.)*(x - a)/(b - a) + (1./6.))*(b - a) + a;
-        }
-
-        // https://www.shadertoy.com/view/MsSBRh
-        // inverse of y = x²(3-2x)
-        float inverse_smoothstep( float x )
-        {
-            return 0.5-sin(asin(1.0-2.0*x)/3.0);
-        }
-
-        float cubicPulse( float c, float w, float x ){
-          x = abs(x - c);
-          if( x>w ) return 0.0;
-          x /= w;
-          return 1.0 - x*x*(3.0-2.0*x);
-        }
-
-        // angle returned in radians
-        float angleBetweenVs(vec3 v1, vec3 v2) {
-          return acos(dot(v1, v2) / (length(v1) * length(v2)));
+        float marchRay(vec3 ray, float marched, float endPoint, float marchStep, float stepWeight) {
+          float totalVolume = 0.;
+          while (marched <= endPoint) {
+            vec3 p = v_cam + marched * ray;
+            vec2 uv = equirectUv(normalize(p));
+            float heightMapVal = texture(heightMap, uv).r;
+            totalVolume += heightMapVal * stepWeight;
+            marched += marchStep;
+          }
+          return totalVolume;
         }
 
         void main() {
           vec3 rayDir = normalize(v_dir);
           float radius = 1.0;
           float totalVolume = 0.;
-          float perIteration = 1. / float(iterations);
-          int heightmapHits = 0;
-          int intercepts = 0;
+          float marchStep = 1. / float(iterations);
+          float stepWeight = marchStep * 2.;
 
-          // This is to make depth thinner at the fringes of the sphere
-          // such that the shells/iterations are more compact,
-          // if the shells are slightly too far apart, you will see the cross-section lines
-          float m_depth = depth * (1.0 - smoothstep(0.0, 1.15, a_pos));
-          // float m_depth = depth;
-
+          float roots_outer[3];
+          float roots_inner[3];
+          float a = dot(rayDir, rayDir);
+          float b = 2.0 * (dot(rayDir, v_cam));
+          float c_outer = dot(v_cam, v_cam) - pow(radius, 2.0);
+          float c_inner = dot(v_cam, v_cam) - pow((radius-depth), 2.0);
           // https://en.wikipedia.org/wiki/Line%E2%80%93sphere_intersection
           // calculate a,b,c of the line equation for v_dir
-          for (int i=0; i<iterations; ++i) {
-            float a = dot(rayDir, rayDir);
-            float b = 2.0 * (dot(rayDir, v_cam));
-            float c = dot(v_cam, v_cam) - pow(radius, 2.0);
-            float roots[3];
-            // solving for intersection points
-            solveQuadratic(a, b, c, roots, a_pos);
+          // solving for outer and inner shells
+          solveQuadratic(a, b, c_outer, roots_outer);
+          solveQuadratic(a, b, c_inner, roots_inner);
 
-            // loop through all intersections, roots[0] stores number of intersections
-            for (int j=1; j<=int(roots[0]); ++j) {
-              intercepts += 1;
-              vec3 p = v_cam + roots[j] * rayDir;
-              float ang_p = angleBetweenVs(v_cam, p);
-              
-              vec2 uv = equirectUv(normalize(p));
-              float heightMapVal = texture(heightMap, uv).r;
-              // dimmify color if it is at the back
-              if (j == 2) {
-                heightMapVal *= 0.4;
-              }
-
-              if (heightMapVal > 0.0) {
-                heightmapHits += 1;
-              }
-              
-              // Accumulate the volume and advance the ray forward one step
-              // totalVolume += heightMapVal * perIteration;
-              // if (ang_p >= 1.11 && j == 1) {
-              //   totalVolume += 10.0;
-              // }
-              // trying to use cubicPulse to only amplify volume at the fringes
-              // but the effect isn't enough... as long as you render them as shells,
-              // it's still very easy to see the shell fringes even though they have high volume each
-              // as long as there're still gaps between them
-              // TODO: try to think of a way to 'remove' the gaps at the fringes
-              float mid_angle = PI - PI/2. - a_cam;
-              totalVolume += heightMapVal * perIteration * pow((cubicPulse(mid_angle, 0.3, ang_p) + 1.0), 2.0);
-              // totalVolume += heightMapVal * perIteration;
-            }
-            // descend one shell downwards
-            radius -= m_depth * perIteration;
+          if (int(roots_outer[0]) == 1) {
+            totalVolume = marchRay(rayDir, roots_outer[1], roots_outer[1], marchStep, stepWeight);
+          } else if (int(roots_inner[0]) <= 1) {
+            // starts at the closest intersection
+            totalVolume = marchRay(rayDir, roots_outer[1], roots_outer[2], marchStep, stepWeight);
+          } else if (int(roots_inner[0]) == 2) {
+            // start with the first intersection pair
+            totalVolume = marchRay(rayDir, roots_outer[1], roots_inner[1], marchStep, stepWeight);
+            // next loop the second intersection pair
+            totalVolume += marchRay(rayDir, roots_inner[2], roots_outer[2], marchStep, stepWeight);
           }
-          // I want to increase the color for the aurora bands at the fringes
-          // so I tried using clamp here for places where bands exist
-          // but the effect isn't good because that makes the color difference
-          // between bands and emptiness too abrupt
-          // if (heightmapHits > 0) {
-          //   totalVolume = smoothClamp(totalVolume, 0.15, 0.9);
-          // }
-
-          // Condition 1: p has to be a point touching a virtual shell
-          // Condition 2: p cannot be lower than the lowest shell (1. - m_depth)
-          // then check the uv of p and heightmap val there and add that to totalVolume
-          // float targetRadius = sin(a_cam) * sqrt(dot(v_cam, v_cam));
-          // if (targetRadius >= (1.-m_depth)) {
-          //   float rayLength = cos(a_cam) * sqrt(dot(v_cam, v_cam));
-          //   vec3 p = v_cam + rayLength * rayDir;
-          //   vec2 uv = equirectUv(normalize(p));
-          //   float heightMapVal = texture(heightMap, uv).r;
-          //   totalVolume += heightMapVal * perIteration * 2.;
-          // }
-
-          // TODO: improve the above approximate fix
-          // such that not only at the point of fringe that the color is magnified
-          // but angles near the point of fringe need to receive the amplification proportionally/smoothly
-          // Condition 1: set a range for a_pos that does amplification?
-          // Condition 2: has to be where there are heightmap values
           
           // Top-clamp the totalVolume so the colors at overlapping areas won't be too blown-up
           vec4 rgba = mix(vec4(colorA, 0.0), vec4(colorB, 1.0), clamp(totalVolume, 0.0, 0.9));
@@ -331,7 +258,7 @@ let app = {
     // GUI controls
     const gui = new dat.GUI()
     gui.add(params, 'roughness', 0, 1, 0.01).onChange(v => baseMaterial.roughness = v)
-    gui.add(params, 'iterations', 0, 64, 1).onChange(v => uniforms.iterations.value = v)
+    gui.add(params, 'iterations', 10, 150, 1).onChange(v => uniforms.iterations.value = v)
     gui.add(params, 'depth', 0, 1, 0.01).onChange(v => uniforms.depth.value = v)
     gui.add(params, 'smoothing', 0, 1, 0.01).onChange(v => uniforms.smoothing.value = v)
     gui.add(params, 'displacement', 0, 0.3, 0.001).onChange(v => uniforms.displacement.value = v)
