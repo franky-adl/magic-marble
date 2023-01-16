@@ -79,7 +79,7 @@ let app = {
     this.controls = new OrbitControls(camera, renderer.domElement)
     this.controls.enableDamping = true
     this.controls.autoRotate = true
-    this.controls.autoRotateSpeed = 0.5
+    this.controls.autoRotateSpeed = 1.0
 
     // set up environment
     const envMap = await loadHDRI(hdriURL)
@@ -198,6 +198,8 @@ let app = {
           float totalVolume = 0.;
           while (marched <= endPoint) {
             vec3 p = v_cam + marched * ray;
+            // below displacement effect is not suitable for the aurora pattern
+            // p = displacePoint(p, displacement);
             vec2 uv = equirectUv(normalize(p));
             float heightMapVal = texture(heightMap, uv).r;
             totalVolume += heightMapVal * stepWeight;
@@ -289,4 +291,4 @@ let app = {
  * ps. if you don't use custom shaders, pass undefined to the 'uniforms'(2nd-last) param
  * ps. if you don't use post-processing, pass undefined to the 'composer'(last) param
  *************************************************/
-runApp(app, scene, renderer, camera, true, undefined, undefined)
+runApp(app, scene, renderer, camera, true, uniforms, undefined)
