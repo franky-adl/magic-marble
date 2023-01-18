@@ -8,6 +8,7 @@
     "build": "parcel build src/index.html --public-url ./"
   },
   "dependencies": {
+    "@parcel/transformer-glsl": "^2.8.2",
     "dat.gui": "^0.7.9",
     "three": "0.145.0"
   },
