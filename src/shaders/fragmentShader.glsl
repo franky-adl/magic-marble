@@ -21,6 +21,31 @@ varying vec3 v_pos;
 varying vec3 v_dir;
 varying vec3 v_cam;
 varying float a_pos;
+varying vec2 vUv;
+
+#pragma glslify: lava_noise = require('./lavaNoiseShader.glsl')
+
+// https://inspirnathan.com/posts/54-shadertoy-tutorial-part-8/
+// Rotation matrix around the X axis.
+mat3 rotateX(float theta) {
+    float c = cos(theta);
+    float s = sin(theta);
+    return mat3(
+        vec3(1, 0, 0),
+        vec3(0, c, -s),
+        vec3(0, s, c)
+    );
+}
+// Rotation matrix around the Y axis.
+mat3 rotateY(float theta) {
+    float c = cos(theta);
+    float s = sin(theta);
+    return mat3(
+        vec3(c, 0, s),
+        vec3(0, 1, 0),
+        vec3(-s, 0, c)
+    );
+}
 
 /**
  * Reference: https://en.wikipedia.org/wiki/Quadratic_equation
@@ -58,10 +83,29 @@ float marchRay(vec3 ray, float marched, float endPoint, float marchStep, float s
     float totalVolume = 0.;
     while (marched <= endPoint) {
         vec3 p = v_cam + marched * ray;
+
+        // displacing the p vectors with lava noise (a kind of improvised simplex noise)
+        // notice that this is actually gpu costly as we're running this inside the marchRay loop
+        // but if you calculate the lava_noise outside this loop, using probably ray as the vector3 input,
+        // the result would be more like a 2D distortion instead
+        float noiseMag = lava_noise(p.xy, u_time).r;
+        p.x += noiseMag * 0.1;
+        p.y -= noiseMag * 0.1;
+
+        vec3 normP = normalize(p);
         // equirectUv function is included from the common shader lib
-        vec2 uv = equirectUv(normalize(p));
+        vec2 uv = equirectUv(normP);
+        // for applying to some noise displacement maps
+        // vec2 timed_uv = equirectUv(rotateY(u_time*0.3)*normP);
+        // vec2 timed_uv2 = equirectUv(rotateX(-u_time*0.3)*rotateY(-u_time*0.3)*normP);
+
         float heightMapVal = texture(heightMap, uv).r;
-        totalVolume += heightMapVal * stepWeight;
+        
+        // tweak the value further by some noise displacement maps/functions
+        // heightMapVal *= lava_noise(equirectUv(normP), u_time).r;
+        // TODO: we need some kind of warping to make it look more like aurora
+
+        totalVolume += heightMapVal * stepWeight * smoothstep(1.-depth, 1.-depth+0.1, length(p));
         marched += marchStep;
     }
     return totalVolume;
@@ -104,6 +148,7 @@ void main() {
     }
     
     // Top-clamp the totalVolume so the colors at overlapping areas won't be too blown-up
-    vec4 rgba = mix(vec4(colorA, 0.0), vec4(colorB, 1.0), clamp(totalVolume, 0.0, 0.9));
+    // play with colors
+    vec4 rgba = mix(vec4(colorA, 0.0), vec4(rotateX(u_time*0.5)*rotateY(u_time*0.5)*v_pos, 1.0), clamp(totalVolume, 0.0, 0.9));
     gl_FragColor = rgba;
 }

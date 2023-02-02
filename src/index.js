@@ -15,6 +15,7 @@ import frag from './shaders/fragmentShader.glsl'
 const hdriURL = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/empty_warehouse_01_1k.hdr'
 const displacementMapURL = 'https://i.imgur.com/L1pqRg9.jpeg'
 import TextureImg from "./assets/wavy6.png"
+import VorNoise from "./assets/distorted_noise.png"
 
 global.THREE = THREE
 
@@ -82,7 +83,7 @@ let app = {
     this.controls = new OrbitControls(camera, renderer.domElement)
     this.controls.enableDamping = true
     this.controls.autoRotate = true
-    this.controls.autoRotateSpeed = 1.0
+    this.controls.autoRotateSpeed = 0.2
 
     // set up environment
     const envMap = await loadHDRI(hdriURL)
@@ -91,8 +92,8 @@ let app = {
 
     // Load heightmap and displacementMap textures
     const heightMap = await this.loadTexture(TextureImg)
-    const displacementMap = await this.loadTexture(displacementMapURL)
-    displacementMap.wrapS = displacementMap.wrapT = THREE.RepeatWrapping
+    const displacementMap = await this.loadTexture(VorNoise)
+    // displacementMap.wrapS = displacementMap.wrapT = THREE.RepeatWrapping
     // Prevent seam introduced by THREE.LinearFilter
     heightMap.minFilter = THREE.NearestFilter
     // Add heightmap and displacementMap to local uniforms object
