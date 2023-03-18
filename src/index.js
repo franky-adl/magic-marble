@@ -106,7 +106,7 @@ let app = {
 
     const auroraGeometry = new THREE.SphereGeometry(1, 64, 32)
     const baseGeometry = new THREE.SphereGeometry(0.925, 64, 32)
-    auroraMaterial = new THREE.ShaderMaterial({
+    const auroraMaterial = new THREE.ShaderMaterial({
       vertexShader: vert,
       fragmentShader: frag,
       uniforms: uniforms,
